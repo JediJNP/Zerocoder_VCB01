@@ -349,7 +349,7 @@ def create_default_logic(world_size: Tuple[int, int]) -> GameLogic:
 
 
 
-if __name__ == "__main__":
+def run_game() -> None:
     # Minimal visual interface built on top of the pure logic above
     import random
     import pygame
@@ -535,3 +535,6 @@ if __name__ == "__main__":
         pygame.display.flip()
 
     pygame.quit()
+
+if __name__ == "__main__":
+    run_game()
