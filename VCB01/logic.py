@@ -348,3 +348,190 @@ def create_default_logic(world_size: Tuple[int, int]) -> GameLogic:
     return GameLogic(world_width=float(w), world_height=float(h))
 
 
+
+if __name__ == "__main__":
+    # Minimal visual interface built on top of the pure logic above
+    import random
+    import pygame
+
+    # -------- Config -------- #
+    WINDOW_WIDTH = 1024
+    WINDOW_HEIGHT = 720
+    STARTING_BALLS = 40  # Стартовое количество шариков
+    MAX_INITIAL_SPEED = 180.0
+    MIN_RADIUS = 8.0
+    MAX_RADIUS = 20.0
+    SPIT_SPEED = 360.0
+    INV_PANEL_WIDTH = 170
+    INV_CELL = 46
+    INV_PADDING = 8
+
+    # -------- Helpers -------- #
+    def _to_px_color(rgb: ColorRGB) -> Tuple[int, int, int]:
+        r = int(_clamp(rgb[0], 0.0, 1.0) * 255)
+        g = int(_clamp(rgb[1], 0.0, 1.0) * 255)
+        b = int(_clamp(rgb[2], 0.0, 1.0) * 255)
+        return r, g, b
+
+    def _random_ball_params() -> Tuple[Vector, Vector, float, ColorRGB]:
+        radius = random.uniform(MIN_RADIUS, MAX_RADIUS)
+        px = random.uniform(radius, WINDOW_WIDTH - radius)
+        py = random.uniform(radius, WINDOW_HEIGHT - radius)
+        ang = random.uniform(0.0, math.tau)
+        spd = random.uniform(0.0, MAX_INITIAL_SPEED)
+        vx = math.cos(ang) * spd
+        vy = math.sin(ang) * spd
+        color = (random.random(), random.random(), random.random())
+        return (px, py), (vx, vy), radius, color
+
+    def _draw_delete_zone(surface: pygame.Surface, rect: Rect) -> None:
+        # Soft tinted rectangle for delete zone
+        zone = pygame.Rect(int(rect.x), int(rect.y), int(rect.width), int(rect.height))
+        fill_surf = pygame.Surface((zone.width, zone.height), pygame.SRCALPHA)
+        fill_surf.fill((255, 64, 64, 45))
+        surface.blit(fill_surf, zone.topleft)
+        pygame.draw.rect(surface, (220, 64, 64), zone, width=2)
+
+    def _draw_suction(surface: pygame.Surface, suction: Suction) -> None:
+        if not suction.is_active:
+            return
+        sx, sy = int(suction.position[0]), int(suction.position[1])
+        # Outer (influence) radius
+        pygame.draw.circle(surface, (64, 128, 255), (sx, sy), int(suction.radius), width=2)
+        # Capture radius
+        pygame.draw.circle(surface, (64, 200, 255), (sx, sy), int(suction.capture_radius), width=2)
+        # Center
+        pygame.draw.circle(surface, (40, 40, 40), (sx, sy), 3)
+
+    def _draw_inventory(surface: pygame.Surface, balls: Iterable[Ball], panel_rect: pygame.Rect, title_font: pygame.font.Font) -> None:
+        # Panel background
+        bg = pygame.Surface((panel_rect.width, panel_rect.height), pygame.SRCALPHA)
+        bg.fill((40, 40, 40, 18))
+        surface.blit(bg, panel_rect.topleft)
+        pygame.draw.rect(surface, (160, 160, 160), panel_rect, width=1)
+
+        # Title
+        title = title_font.render("Инвентарь", True, (30, 30, 30))
+        surface.blit(title, (panel_rect.x + INV_PADDING, panel_rect.y + INV_PADDING))
+
+        # Grid of balls
+        x0 = panel_rect.x + INV_PADDING
+        y0 = panel_rect.y + INV_PADDING + title.get_height() + 6
+        cols = 2
+        col_w = (panel_rect.width - INV_PADDING * 2) // cols
+        row_h = INV_CELL
+
+        for i, b in enumerate(balls):
+            row = i // cols
+            col = i % cols
+            cx = x0 + col * col_w + col_w // 2
+            cy = y0 + row * row_h + row_h // 2
+            # Icon radius scaled to cell
+            icon_r = max(6, min(int(b.radius), row_h // 2 - 6))
+            color = _to_px_color(b.color_rgb)
+            pygame.draw.circle(surface, color, (int(cx), int(cy)), icon_r)
+            pygame.draw.circle(surface, (50, 50, 50), (int(cx), int(cy)), icon_r, width=1)
+
+    # -------- Pygame setup -------- #
+    pygame.init()
+    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+    pygame.display.set_caption("Шарики — логика и интерфейс")
+    clock = pygame.time.Clock()
+    font = pygame.font.SysFont(None, 22)
+    title_font = pygame.font.SysFont(None, 24)
+
+    logic = create_default_logic((WINDOW_WIDTH, WINDOW_HEIGHT))
+
+    # Seed starting balls
+    for _ in range(STARTING_BALLS):
+        p, v, r, c = _random_ball_params()
+        logic.add_ball(position=p, velocity=v, radius=r, color_rgb=c)
+
+    running = True
+    suction_active = False
+    last_mouse_pos = (WINDOW_WIDTH * 0.5, WINDOW_HEIGHT * 0.5)
+    last_mouse_pos_prev = last_mouse_pos
+
+    while running:
+        dt = clock.tick(60) / 1000.0
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1:
+                    # Start suction at cursor
+                    mx, my = event.pos
+                    logic.start_suction((mx, my))
+                    suction_active = True
+                elif event.button == 3:
+                    # Spit next from inventory in the direction of recent mouse movement
+                    mx, my = event.pos
+                    dx = (last_mouse_pos[0] - last_mouse_pos_prev[0])
+                    dy = (last_mouse_pos[1] - last_mouse_pos_prev[1])
+                    if dx == 0.0 and dy == 0.0:
+                        dx, dy = 0.0, -1.0
+                    sent_id = logic.spit_next((mx, my), (dx, dy), SPIT_SPEED)
+                    # Optionally could visualize a brief muzzle flash or line — skipped for simplicity
+            elif event.type == pygame.MOUSEBUTTONUP:
+                if event.button == 1:
+                    logic.stop_suction()
+                    suction_active = False
+            elif event.type == pygame.MOUSEMOTION:
+                mx, my = event.pos
+                last_mouse_pos_prev = last_mouse_pos
+                last_mouse_pos = (mx, my)
+                if suction_active:
+                    logic.update_suction((mx, my))
+
+        # Step simulation
+        logic.step(dt)
+
+        # Draw
+        screen.fill((255, 255, 255))
+
+        # Delete zone
+        _draw_delete_zone(screen, logic.delete_zone)
+
+        # World area is shifted right by inventory panel
+        world_offset_x = INV_PANEL_WIDTH
+        world_rect = pygame.Rect(world_offset_x, 0, WINDOW_WIDTH - world_offset_x, WINDOW_HEIGHT)
+
+        # Draw a subtle divider for the panel
+        pygame.draw.rect(screen, (235, 235, 235), pygame.Rect(0, 0, INV_PANEL_WIDTH, WINDOW_HEIGHT))
+        pygame.draw.line(screen, (210, 210, 210), (INV_PANEL_WIDTH, 0), (INV_PANEL_WIDTH, WINDOW_HEIGHT), width=2)
+
+        # Balls
+        for b in logic.get_balls_snapshot():
+            color = _to_px_color(b.color_rgb)
+            pygame.draw.circle(screen, color, (int(b.position[0]), int(b.position[1])), int(b.radius))
+            pygame.draw.circle(screen, (20, 20, 20), (int(b.position[0]), int(b.position[1])), int(b.radius), width=1)
+
+        # Suction visuals
+        _draw_suction(screen, logic._suction)
+
+        # Inventory panel and HUD
+        inv_ids = logic.get_inventory_ids()
+        inv_count = len(inv_ids)
+        panel_rect = pygame.Rect(0, 0, INV_PANEL_WIDTH, WINDOW_HEIGHT)
+        _draw_inventory(screen, (logic._inventory[iid] for iid in inv_ids), panel_rect, title_font)
+
+        hud_lines: List[str] = [
+            f"Шариков на поле: {len(logic.get_balls_snapshot())}",
+            f"В инвентаре: {inv_count} (ПКМ — выплюнуть)",
+            "ЛКМ (удерживать) — всасывать",
+            "ESC — выход",
+        ]
+        y = 8
+        x = INV_PANEL_WIDTH + 12
+        for line in hud_lines:
+            surf = font.render(line, True, (30, 30, 30))
+            screen.blit(surf, (x, y))
+            y += surf.get_height() + 2
+
+        pygame.display.flip()
+
+    pygame.quit()
